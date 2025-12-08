@@ -6,31 +6,12 @@ visibility: public
 # categories: []
 contributions:
   commands:
-    - id: nagini3d-napari.make_container_widget
-      python_name: nagini3d_napari:ImageThreshold
-      title: Make threshold Container widget
-    - id: nagini3d-napari.make_magic_widget
-      python_name: nagini3d_napari:threshold_magic_widget
-      title: Make threshold magic widget
-    - id: nagini3d-napari.make_function_widget
-      python_name: nagini3d_napari:threshold_autogenerate_widget
-      title: Make threshold function widget
-    - id: nagini3d-napari.make_qwidget
-      python_name: nagini3d_napari:ExampleQWidget
-      title: Make example QWidget
+    - id: nagini3d-napari.make_segmentation_widget
+      python_name: nagini3d_napari:segment_with_nagini
+      title: Make Nagini Segmentation widget
   widgets:
-    - command: nagini3d-napari.make_container_widget
-      display_name: Container Threshold
-    - command: nagini3d-napari.make_magic_widget
-      display_name: Magic Threshold
-    - command: nagini3d-napari.make_function_widget
-      autogenerate: true
-      display_name: Autogenerate Threshold
-    - command: nagini3d-napari.make_qwidget
-      display_name: Example QWidget
+    - command: nagini3d-napari.make_segmentation_widget
+      display_name: Nagini3D Segmentation tool
   menus:
     napari/layers/segment:
-      - command: nagini3d-napari.make_container_widget
-      - command: nagini3d-napari.make_magic_widget
-      - command: nagini3d-napari.make_function_widget
-      - command: nagini3d-napari.make_qwidget
+      - command: nagini3d-napari.make_segmentation_widget

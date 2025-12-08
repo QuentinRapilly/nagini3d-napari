@@ -28,101 +28,212 @@ References:
 
 Replace code below according to your needs.
 """
+
+import pathlib
+from os.path import join
 from typing import TYPE_CHECKING
 
+import numpy as np
+import yaml
 from magicgui import magic_factory
-from magicgui.widgets import CheckBox, Container, create_widget
-from qtpy.QtWidgets import QHBoxLayout, QPushButton, QWidget
-from skimage.util import img_as_float
+from nagini3D.models.model import Nagini3D
+from nagini3D.models.tools.refinement import (
+    image_to_refinement_grad,
+    image_to_refinement_grad_otsu,
+)
+from nagini3D.models.tools.snake_sampler import SnakeSmoothSampler
+from napari.layers import Image, Labels, Layer, Surface
+from sklearn.neighbors import NearestNeighbors
+from torch import tensor
+from torch.cuda import is_available
 
 if TYPE_CHECKING:
     import napari
 
 
-# Uses the `autogenerate: true` flag in the plugin manifest
-# to indicate it should be wrapped as a magicgui to autogenerate
-# a widget.
-def threshold_autogenerate_widget(
-    img: "napari.types.ImageData",
-    threshold: "float",
-) -> "napari.types.LabelsData":
-    return img_as_float(img) > threshold
-
-
-# the magic_factory decorator lets us customize aspects of our widget
-# we specify a widget type for the threshold parameter
-# and use auto_call=True so the function is called whenever
-# the value of a parameter changes
 @magic_factory(
-    threshold={"widget_type": "FloatSlider", "max": 1}, auto_call=True
+    model_path={"mode": "d", "label": "Choose a model directory"},
+    call_button="Segment",
 )
-def threshold_magic_widget(
-    img_layer: "napari.layers.Image", threshold: "float"
-) -> "napari.types.LabelsData":
-    return img_as_float(img_layer.data) > threshold
+def segment_with_nagini(
+    image_layer: "napari.layers.Image",
+    model_path=pathlib.Path(
+        "/home/qrapilly/Documents/Code/Results/nagini-reg/weights/chips_model/chips_w_reg_2025-07-16_19:06:53"
+    ),
+    use_gpu: bool = True,
+    tiles_x: int = 1,
+    tiles_y: int = 1,
+    tiles_z: int = 1,
+    use_otsu: bool = False,
+) -> list[Layer]:
+    device = "cuda" if (is_available() and use_gpu) else "cpu"
+    with open(join(model_path, "config.yaml")) as file:
+        cfg = yaml.safe_load(file)
+    with open(join(model_path, "thresholds.yaml")) as file:
+        thresholds = yaml.safe_load(file)
 
+    print(f"Device : {device}")
 
-# if we want even more control over our widget, we can use
-# magicgui `Container`
-class ImageThreshold(Container):
-    def __init__(self, viewer: "napari.viewer.Viewer"):
-        super().__init__()
-        self._viewer = viewer
-        # use create_widget to generate widgets from type annotations
-        self._image_layer_combo = create_widget(
-            label="Image", annotation="napari.layers.Image"
+    anisotropy = 1, 1, 1
+
+    M1 = cfg["settings"]["M1"]
+    M2 = cfg["settings"]["M2"]
+    r_mean = cfg["settings"]["r_mean"]
+    use_scale = cfg["settings"]["use_scale"]
+
+    weight_path = join(model_path, "best.pkl")
+    model = Nagini3D(
+        unet_cfg=cfg["model"],
+        P=101,
+        M1=M1,
+        M2=M2,
+        save_path="./",
+        device=device,
+        use_scale=use_scale,
+    )
+    model.load_weights(weight_path)
+
+    proba_th = thresholds["prob"]
+    nms_th = thresholds["nms"]
+
+    nb_tiles = tiles_x, tiles_y, tiles_z
+
+    grad_fn = (
+        image_to_refinement_grad_otsu if use_otsu else image_to_refinement_grad
+    )
+
+    mask_base, mask_refined, proba, points_base, points_refined = (
+        model.inference_classic_n_refined(
+            image_layer.data,
+            proba_th=proba_th,
+            r_mean=r_mean,
+            nb_tiles=nb_tiles,
+            nms_th=nms_th,
+            anisotropy=anisotropy,
+            grad_fn=grad_fn,
         )
-        self._threshold_slider = create_widget(
-            label="Threshold", annotation=float, widget_type="FloatSlider"
+    )
+
+    print("Model generated prediction")
+
+    mask_base_layer = Labels(mask_base, name="Mask (base)")
+    mask_refined_layer = Labels(mask_refined, name="Mask (refined)")
+    proba_layer = Image(proba, name="Score map")
+
+    sampler = SnakeSmoothSampler(P=301, M1=M1, M2=M2, device=device)
+
+    pos_base, facets_base, _ = (
+        points_base["points"],
+        points_base["facets"],
+        points_base["values"],
+    )
+    nb_obj_base, nb_points_base, _ = pos_base.shape
+    flat_pos_base = pos_base.reshape((-1, 3))
+    flat_values_base = np.concatenate(
+        [np.ones(nb_points_base) * i / nb_obj_base for i in range(nb_obj_base)]
+    )  # np.tile(values_base,nb_obj_base)
+    flat_facets_base = np.concatenate(
+        [nb_points_base * i + facets_base for i in range(nb_obj_base)]
+    )
+
+    surface_base_layer = Surface(
+        (flat_pos_base, flat_facets_base, flat_values_base),
+        colormap="hsv",
+        name="Surface base",
+    )
+
+    c_pos_base, c_values_base = sampler.get_curvature_and_position(
+        tensor(points_base["params"], device=device)
+    )
+    curv_base = []
+    for idx in range(nb_obj_base):
+        crt_points = (
+            points_base["points"][idx] - points_base["centers"][idx][None, :]
         )
-        self._threshold_slider.min = 0
-        self._threshold_slider.max = 1
-        # use magicgui widgets directly
-        self._invert_checkbox = CheckBox(text="Keep pixels below threshold")
-
-        # connect your own callbacks
-        self._threshold_slider.changed.connect(self._threshold_im)
-        self._invert_checkbox.changed.connect(self._threshold_im)
-
-        # append into/extend the container with your widgets
-        self.extend(
-            [
-                self._image_layer_combo,
-                self._threshold_slider,
-                self._invert_checkbox,
-            ]
+        curv_pos, curv_values = c_pos_base[idx], c_values_base[idx]
+        knn = NearestNeighbors(n_neighbors=3, algorithm="ball_tree").fit(
+            curv_pos
         )
+        distances, indices = knn.kneighbors(crt_points)
+        inv_dist = 1 / distances
+        weight = inv_dist / inv_dist.sum(axis=-1, keepdims=True)
+        display_curv = (curv_values[indices] * weight).sum(axis=-1)
+        curv_base.append(display_curv)
+    flat_curve_base = np.concatenate(np.array(curv_base))
+    low_base, high_base = np.quantile(flat_curve_base, 0.05), np.quantile(
+        flat_curve_base, 0.95
+    )
+    max_contrast_base = max(abs(low_base), abs(high_base))
 
-    def _threshold_im(self):
-        image_layer = self._image_layer_combo.value
-        if image_layer is None:
-            return
+    curv_base_layer = Surface(
+        (flat_pos_base, flat_facets_base, flat_curve_base),
+        colormap="twilight_shifted",
+        name="Curvature base",
+        contrast_limits=[-max_contrast_base, max_contrast_base],
+    )
 
-        image = img_as_float(image_layer.data)
-        name = image_layer.name + "_thresholded"
-        threshold = self._threshold_slider.value
-        if self._invert_checkbox.value:
-            thresholded = image < threshold
-        else:
-            thresholded = image > threshold
-        if name in self._viewer.layers:
-            self._viewer.layers[name].data = thresholded
-        else:
-            self._viewer.add_labels(thresholded, name=name)
+    pos_refined, facets_refined, _ = (
+        points_refined["points"],
+        points_refined["facets"],
+        points_refined["values"],
+    )
+    nb_obj_refined, nb_points_refined, _ = pos_refined.shape
+    flat_pos_refined = pos_refined.reshape((-1, 3))
+    flat_values_refined = np.concatenate(
+        [
+            np.ones(nb_points_refined) * i / nb_obj_refined
+            for i in range(nb_obj_refined)
+        ]
+    )  # np.tile(values_refined,nb_obj_base)
+    flat_facets_refined = np.concatenate(
+        [nb_points_refined * i + facets_refined for i in range(nb_obj_refined)]
+    )
 
+    surface_refined_layer = Surface(
+        (flat_pos_refined, flat_facets_refined, flat_values_refined),
+        colormap="hsv",
+        name="Surface refined",
+    )
 
-class ExampleQWidget(QWidget):
-    # your QWidget.__init__ can optionally request the napari viewer instance
-    # use a type annotation of 'napari.viewer.Viewer' for any parameter
-    def __init__(self, viewer: "napari.viewer.Viewer"):
-        super().__init__()
-        self.viewer = viewer
+    c_pos_refined, c_values_refined = sampler.get_curvature_and_position(
+        tensor(points_refined["params"], device=device)
+    )
+    curv_refined = []
+    for idx in range(nb_obj_refined):
+        crt_points = (
+            points_refined["points"][idx]
+            - points_refined["centers"][idx][None, :]
+        )
+        curv_pos, curv_values = c_pos_refined[idx], c_values_refined[idx]
+        knn = NearestNeighbors(n_neighbors=3, algorithm="ball_tree").fit(
+            curv_pos
+        )
+        distances, indices = knn.kneighbors(crt_points)
+        inv_dist = 1 / distances
+        weight = inv_dist / inv_dist.sum(axis=-1, keepdims=True)
+        display_curv = (curv_values[indices] * weight).sum(axis=-1)
+        curv_refined.append(display_curv)
+    flat_curve_refined = np.concatenate(np.array(curv_refined))
+    low_refined, high_refined = np.quantile(
+        flat_curve_refined, 0.05
+    ), np.quantile(flat_curve_refined, 0.95)
+    max_contrast_refined = max(abs(low_refined), abs(high_refined))
 
-        btn = QPushButton("Click me!")
-        btn.clicked.connect(self._on_click)
+    curv_refined_layer = Surface(
+        (flat_pos_refined, flat_facets_refined, flat_curve_refined),
+        colormap="twilight_shifted",
+        name="Curvature refined ",
+        contrast_limits=[-max_contrast_refined, max_contrast_refined],
+    )
 
-        self.setLayout(QHBoxLayout())
-        self.layout().addWidget(btn)
+    print("End of the function")
 
-    def _on_click(self):
-        print("napari has", len(self.viewer.layers), "layers")
+    return [
+        mask_base_layer,
+        mask_refined_layer,
+        proba_layer,
+        surface_base_layer,
+        surface_refined_layer,
+        curv_base_layer,
+        curv_refined_layer,
+    ]

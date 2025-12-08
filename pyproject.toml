@@ -1,7 +1,7 @@
 [project]
 name = "nagini3d-napari"
 dynamic = ["version"]
-description = "A simple plugin that implements Nagini3D inference tools for segmenting 3D biological images."
+description = "A simple plugin that implements Nagini3D inference tools 3D biological segmentation."
 readme = "README.md"
 license = {file = "LICENSE"}
 authors = [
@@ -33,6 +33,10 @@ dependencies = [
     "magicgui",
     "qtpy",
     "scikit-image",
+    "scikit-learn",
+    "torch==2.1.0",
+    "torchvision==0.16.0",
+    "nagini3d==0.2.2"
 ]
 
 [project.optional-dependencies]
