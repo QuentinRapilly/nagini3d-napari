@@ -37,15 +37,39 @@ If napari is not already installed, you can install `nagini3d-napari` with napar
 pip install "nagini3d-napari[all]"
 ```
 
+### Installation advice
 
-To install latest development version :
+We recommend installing our plugin on a clean Python environment (Python 3.9 to 3.11 prefered), to avoid any conflict with other packages.
+
+- Create and activate the environment with:
 
 ```
-pip install git+https://github.com/QuentinRapilly/nagini3d-napari.git
+python -m venv <path-to-new-virtual-environment>
+source <path-to-new-virtual-environment>/bin/activate
 ```
 
+- Download the package in the new env with
 
+```
+pip install "nagini3d-napari[all]"
+```
 
+- Launch Napari
+
+```
+napari
+```
+
+- Activate NAGINI3D in the plugin manager.
+
+## Models weights and testing images
+
+An archive containing model weigths trained on different datasets and testing images are available on
+zenodo at [https://zenodo.org/records/17909858](https://zenodo.org/records/17909858).
+
+## Documentation
+
+The GitHub project containing all the documentation is available at [https://github.com/QuentinRapilly/NAGINI-3D](https://github.com/QuentinRapilly/NAGINI-3D).
 ## Contributing
 
 Contributions are very welcome. Tests can be run with [tox], please ensure
